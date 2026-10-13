@@ -1,0 +1,67 @@
+{
+  "workflows": {
+    "GR5526 TDD 双 Agent 流水线": {
+      "name": "GR5526 TDD 双 Agent 流水线",
+      "nodes": [
+        { "name": "手动启动", "type": "n8n-nodes-base.manualTrigger" },
+        { "name": "[ORCH] 初始化任务", "type": "n8n-nodes-base.code" },
+        { "name": "[CI] 触发 Jenkins 构建", "type": "n8n-nodes-base.jenkins" },
+        { "name": "[WAIT] 等 30 秒", "type": "n8n-nodes-base.wait" },
+        { "name": "[CI] 列出最近构建", "type": "n8n-nodes-base.jenkins" },
+        { "name": "[NORM] 规范化构建状态", "type": "n8n-nodes-base.code" },
+        { "name": "[IF] 还在构建?", "type": "n8n-nodes-base.if" },
+        { "name": "[FETCH] 压测聚合结果", "type": "n8n-nodes-base.httpRequest" },
+        { "name": "[FETCH] 5526 RTT 日志", "type": "n8n-nodes-base.httpRequest" },
+        { "name": "[FETCH] Cat.1 模组日志", "type": "n8n-nodes-base.httpRequest" },
+        { "name": "[CLASSIFY] 探针分类", "type": "n8n-nodes-base.code" },
+        { "name": "[PARSE] 判定修复结果", "type": "n8n-nodes-base.code" },
+        { "name": "[OUT] 汇总", "type": "n8n-nodes-base.code" },
+        { "name": "[RETRY] 计数+1", "type": "n8n-nodes-base.code" },
+        { "name": "[IF] 还有重试额度?", "type": "n8n-nodes-base.if" },
+        { "name": "[NOTIFY] 通知人（3 次未修复）", "type": "n8n-nodes-base.code" },
+        { "name": "Sticky Note 8e34883a", "type": "n8n-nodes-base.stickyNote" },
+        { "name": "[PROMPT] 组装提示词", "type": "n8n-nodes-base.code" },
+        { "name": "[T] 测试 Agent (API)", "type": "n8n-nodes-base.httpRequest" },
+        { "name": "[T-EX] 提取测试结论", "type": "n8n-nodes-base.code" },
+        { "name": "[D] 开发 Agent (API)", "type": "n8n-nodes-base.httpRequest" },
+        { "name": "[D-EX] 提取开发结论", "type": "n8n-nodes-base.code" },
+        { "name": "[TOKENS] 统计 token", "type": "n8n-nodes-base.code" },
+        { "name": "[MAIL] 发邮件通知", "type": "n8n-nodes-base.emailSend" },
+        { "name": "[IF] 构建通过?", "type": "n8n-nodes-base.if" },
+        { "name": "[MAIL-TPL] 渲染邮件模板", "type": "n8n-nodes-base.code" },
+        { "name": "表单启动（带参数）", "type": "n8n-nodes-base.formTrigger" }
+      ],
+      "connections": {
+        "手动启动": { "main": [[{ "node": "[ORCH] 初始化任务" }]] },
+        "表单启动（带参数）": { "main": [[{ "node": "[ORCH] 初始化任务" }]] },
+        "[ORCH] 初始化任务": { "main": [[{ "node": "[CI] 触发 Jenkins 构建" }]] },
+        "[CI] 触发 Jenkins 构建": { "main": [[{ "node": "[WAIT] 等 30 秒" }]] },
+        "[WAIT] 等 30 秒": { "main": [[{ "node": "[CI] 列出最近构建" }]] },
+        "[CI] 列出最近构建": { "main": [[{ "node": "[NORM] 规范化构建状态" }]] },
+        "[NORM] 规范化构建状态": { "main": [[{ "node": "[IF] 还在构建?" }]] },
+        "[IF] 还在构建?": { "main": [[{ "node": "[WAIT] 等 30 秒" }], [{ "node": "[IF] 构建通过?" }]] },
+        "[IF] 构建通过?": { "main": [[{ "node": "[OUT] 汇总" }], [{ "node": "[FETCH] 压测聚合结果" }]] },
+        "[FETCH] 压测聚合结果": { "main": [[{ "node": "[FETCH] 5526 RTT 日志" }]] },
+        "[FETCH] 5526 RTT 日志": { "main": [[{ "node": "[FETCH] Cat.1 模组日志" }]] },
+        "[FETCH] Cat.1 模组日志": { "main": [[{ "node": "[CLASSIFY] 探针分类" }]] },
+        "[CLASSIFY] 探针分类": { "main": [[{ "node": "[PROMPT] 组装提示词" }]] },
+        "[PROMPT] 组装提示词": { "main": [[{ "node": "[T] 测试 Agent (API)" }]] },
+        "[T] 测试 Agent (API)": { "main": [[{ "node": "[T-EX] 提取测试结论" }]] },
+        "[T-EX] 提取测试结论": { "main": [[{ "node": "[D] 开发 Agent (API)" }]] },
+        "[D] 开发 Agent (API)": { "main": [[{ "node": "[D-EX] 提取开发结论" }]] },
+        "[D-EX] 提取开发结论": { "main": [[{ "node": "[PARSE] 判定修复结果" }]] },
+        "[PARSE] 判定修复结果": { "main": [[{ "node": "[TOKENS] 统计 token" }]] },
+        "[TOKENS] 统计 token": { "main": [[{ "node": "[RETRY] 计数+1" }]] },
+        "[RETRY] 计数+1": { "main": [[{ "node": "[IF] 还有重试额度?" }]] },
+        "[IF] 还有重试额度?": { "main": [[{ "node": "[NOTIFY] 通知人（3 次未修复）" }], [{ "node": "[CI] 触发 Jenkins 构建" }]] },
+        "[NOTIFY] 通知人（3 次未修复）": { "main": [[{ "node": "[OUT] 汇总" }]] },
+        "[OUT] 汇总": { "main": [[{ "node": "[MAIL-TPL] 渲染邮件模板" }]] },
+        "[MAIL-TPL] 渲染邮件模板": { "main": [[{ "node": "[MAIL] 发邮件通知" }]] }
+      },
+      "settings": {
+        "executionOrder": "v1",
+        "executionTimeout": 3600
+      }
+    }
+  }
+}

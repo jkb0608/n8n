@@ -45,7 +45,7 @@ def build_graph(wf: dict):
 
     Annotations (sticky notes) are dropped. Sub-nodes (LLM models, memories)
     are wired through non-main connection types such as ai_languageModel with
-direction model -> chain; they are not part of execution flow and must not
+    direction model -> chain; they are not part of execution flow and must not
     be judged as terminals or as unreachable.
     """
     main_edges, dup, seen = [], [], set()
@@ -245,7 +245,8 @@ def snapshot(dump_dir: Path, out_dir: Path) -> int:
 
 
 def self_test() -> int:
-    t, cond, trig = "n8n-nodes-base.code", "n8n-nodes-base.stickyNote", "n8n-nodes-base.if"
+    t = "n8n-nodes-base.code"
+    cond = "n8n-nodes-base.if"
     trig = "n8n-nodes-base.manualTrigger"
     bad = {
         "nodes": [{"name": "手动启动", "type": trig}, {"name": "[OUT] 汇总", "type": t},

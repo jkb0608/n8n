@@ -94,7 +94,7 @@ node (`[LOG] 规范化日志契约`):
 ```json
 {
   "console_log": "…",
-  "artifacts": { "rtt": "…", "cat1": "…" },
+  "artifacts": { "rtt_log": "…", "stress_json": "…" },
   "source": "mcp|community",
   "fetch_ok": true,
   "http_status": 200,
@@ -102,15 +102,58 @@ node (`[LOG] 规范化日志契约`):
 }
 ```
 
-Swapping the fetch implementation (Jenkins MCP client today, the community
-`n8n-nodes-jenkins` package's *Get Build Console Output* / *Get Build Artifact*
-later) therefore changes exactly one upstream node; no downstream node has to be
-touched.
+`[LOG]` is the **only** node allowed to know the fetch nodes' output shapes, so
+swapping the fetch implementation is a change to `[LOG]` plus its upstream nodes
+- no downstream node is touched. Three implementations exist or existed:
+
+| Version | Fetch nodes | Status |
+|---|---|---|
+| Community | `[JENKINS] 取控制台日志` (`getBuildConsoleOutput`) + two `getBuildArtifact` + `extractFromFile` | **current main path**, `source='community'` |
+| MCP | `[MCP] 取 Jenkins 控制台日志` (`getBuildLog`) | kept wired but **`disabled=true`** as a documented fallback |
+| (first) HTTP | 3 authed `httpRequest` artifact fetches | deleted - the `jenkinsApi` predefined credential never applied auth (see *HTTP 200 is not success*) |
+
+### Two bugs in the community node `n8n-nodes-jenkins` (v0.1.0)
+
+Source: `dist/nodes/JenkinsNode/JenkinsNode.node.js:213, 218-224`.
+
+```js
+url = `${jenkinsBaseUrl}/job/${jobName}/${buildNumber}/artifact/${artifactPath}`;
+response = await this.helpers.httpRequestWithAuthentication.call(this, 'jenkinsCredentialsApi', {method:'GET', url});
+const binaryData = await this.helpers.prepareBinaryData(Buffer.from(response), artifactName);
+newItem.binary[artifactName] = binaryData;
+newItem.json[artifactName] = response;
+```
+
+1. **`artifactPath` must be the whole relative path** (`artifacts/rtt_stress.log`).
+   `artifactName` is only the **output property** name, not a file name. Passing
+   "directory + file" (`artifacts/` + `rtt_stress.log`) makes the node request
+   `…/artifact/artifacts/` and it cheerfully returns the **artifact directory
+   listing**: 185 kB of HTML handed over as if it were the artifact.
+2. **`application/json` artifacts can never be fetched.**
+   `httpRequestWithAuthentication` parses a JSON response into an object first,
+   and `Buffer.from(object)` then throws. So `artifacts/person_search_stress.json`
+   never comes back through `getBuildArtifact`, while text artifacts
+   (`text/plain`, e.g. `rtt_stress.log`, 9 919 B) work.
+3. Set `artifactName: 'data'`, otherwise the binary lands in a property named
+   after the artifact and `extractFromFile` (which reads `data`) sees nothing.
+
+Consequence for the stress numbers: the authoritative machine-readable summary
+(`person_search_stress.json`: `iterations` / `passed` / `failed` / `pass_rate` /
+`latency_sec` / `fail_reasons` / `records[]`) is **unreachable through this node
+today**, so the console's `[stress] passed=N/total pass_rate=X% threshold=Y%`
+line stays the effective source. It was cross-checked against the JSON on disk:
+`passed:1, iterations:20, pass_rate:0.05` ⇔ `passed=1/20 pass_rate=5.00%`.
+Per-iteration pass/fail is therefore derived from the console's own pytest lines
+(`FAILED …::test_person_search_stress[N]` plus `====== 19 failed, 1 passed ======`),
+which is why `records.source` can be `console_pytest`. `stress_source` and
+`records.source` are the switch: once the node is fixed the JSON path takes over
+with no downstream change.
 
 ### Context gate (P3)
 
-Console logs are large. Before anything reaches the model, the log passes a
-three-tier local gate:
+Console logs and artifacts are large. Before anything reaches the model, the log
+**and each artifact** passes a three-tier local gate (an artifact must not be able
+to bypass P3 just because it arrived through a different node):
 
 | Estimated tokens | Action |
 |---|---|
@@ -118,12 +161,14 @@ three-tier local gate:
 | `> 2000` | **prune** - head / middle / tail |
 | otherwise | **pass** - verbatim |
 
-Measured on the real build-255 console log (216 919 chars): the digest mattered.
-With head/tail only, the agent reported *"the console contains only Jenkins
-pipeline scaffolding, no probe lines"*; with the bounded digest of the 217
-matching lines it produced a real, evidence-cited hypothesis
-(`[UART_ERR] code=0x00000002` plus truncated `[CAT1_RX]` fragments on the UART4
-DMA+IDLE receive path).
+Measured on the real build-255 run through the community node: `console_log`
+184 823 chars → est_tok 46 206 → **spill**, 23 701 chars after gating, 217 digest
+hits; `rtt_log` 9 919 chars → est_tok 2 480 → **prune**, 6 547 chars after gating,
+182 digest hits. The digest mattered: with head/tail only the agent reported
+*"the console contains only Jenkins pipeline scaffolding, no probe lines"*; with
+the bounded digest of the matching lines it produced a real, evidence-cited
+hypothesis (`[UART_ERR] code=0x00000002` plus truncated `[CAT1_RX]` fragments on
+the UART4 DMA+IDLE receive path).
 
 ### Known limitation: spill does not actually reach disk here
 
@@ -173,7 +218,10 @@ wrapper can orphan the child process, so confirm with
 
 ## Current managed workflows
 
-### `GR5526 HIL · 单 Agent TDD 流水线` (29 nodes / 33 edges)
+### `GR5526 HIL · 单 Agent TDD 流水线` (35 nodes / 38 edges, 10 groups)
+
+Fetch version: **community** (`n8n-nodes-jenkins`, `source='community'`); the MCP
+variant stays wired but `disabled=true` as a documented fallback.
 
 Module map (n8n node groups):
 
@@ -181,13 +229,22 @@ Module map (n8n node groups):
 |---|---|
 | 01 编排 | task envelope from the form (`RUN_MODE` / `TARGET` / `MAX_RETRIES`) |
 | 02 CI 构建与轮询 | trigger the build, poll every 30 s, normalize the build state |
-| 03 证据采集与完整性门禁 | fetch the console log, normalize it to the contract, 6-state integrity gate |
-| 04 机械分类与固件判定 | probe counting + `[stress]` parsing, and the FIRMWARE_FAIL gate |
-| 05 上下文闸门与落盘 | P3 three-tier context gate + best-effort spill |
-| 06 单 Agent 诊断 | frozen prefix, append-only history, single developer agent |
-| 07 Token 账与重试计数 | per-round usage ledger, prefix invariant, retry counter |
-| 08 升级文案 | escalation body |
-| 09 交付（邮件） | the single terminal: summary -> HTML -> email |
+| 03 证据采集（console + artifacts） | community console fetch + 2 artifact fetches → `extractFromFile` → `[LOG]` normalizes everything into the contract; also holds the disabled MCP fallback |
+| 04 完整性门禁 | 6-state integrity gate: response body first, then status code |
+| 05 机械分类与固件判定 | probe counting (console only) + stress from JSON/regex + `records[]`, and the FIRMWARE_FAIL gate |
+| 06 上下文闸门与落盘 | P3 three-tier context gate (console **and** every artifact) + best-effort spill |
+| 07 单 Agent 诊断 | frozen prefix, append-only history, single developer agent |
+| 08 Token 账与重试计数 | per-round usage ledger, run totals, prefix invariant, retry counter |
+| 09 升级文案 | escalation body |
+| 10 交付（邮件） | the single terminal: summary -> HTML -> email |
+
+Source-of-truth split (fixed by design):
+
+| Data | Source | Used for |
+|---|---|---|
+| probe counts | console log | `[CLASSIFY]` mechanical classification |
+| `rtt_log` | artifact | root-cause detail handed to the agent; **never counted** |
+| `stress_json` | artifact | stress pass rate / `records[]` when reachable; console regex is the documented fallback |
 
 Two bounded loops, both whitelisted:
 
@@ -203,6 +260,60 @@ Either gate failing routes straight to the summary with **zero LLM calls**.
 
 State model: `PASS` / `FIRMWARE_FAIL` / `DATA_UNAVAILABLE` / `API_ERROR` /
 `TIMEOUT` / `INCONCLUSIVE`.
+
+### Known gap: `cat1_stress.log` is not fetched
+
+* **What is missing is root-cause detail, not classification ability.** Probe
+  counting (`downlink_recv` / `locasvr_reply` / `mqtt_send` / `cat1_ack` /
+  `cat1_rx_events` / `uart_err`) comes 100% from the console log, verified
+  field-by-field against the console path; `cat1_stress.log` (16 494 B) only adds
+  Cat.1-side link detail.
+* **How to add it**: one isomorphic node pair - `getBuildArtifact`
+  (`artifactPath: 'artifacts/cat1_stress.log'`, `artifactName: 'data'`) plus
+  `extractFromFile: text` - and one more key in `[LOG].artifacts`. The contract is
+  an open map and `[GATE]` loops over its keys, so **no downstream node changes**.
+* **When to add it**: when the break point lands on the Cat.1 side -
+  `break_point ∈ {cat1_rx_at_stuck, reply_not_sent}` - or when `uart_err > 0` and
+  the gated console digest is not enough to locate the fault.
+
+## Installing a community node by hand on Windows
+
+n8n's community-package installer shells out to `tar`, and on Windows the first
+`tar` on `PATH` is normally a **GNU tar** - Git for Windows ships
+`C:\Program Files\Git\usr\bin\tar.exe`, and on this machine it is msys64's
+`D:\Program Files\msys64\usr\bin\tar.exe` (`tar (GNU tar) 1.35`). GNU tar reads a
+leading `C:` as an **rsh-style remote host**, so an absolute Windows path fails:
+
+```
+tar: Cannot open: No such file or directory
+```
+
+It looks like the package refused to install, but the archiver is at fault, not
+n8n. Workaround - fetch the tarball and unpack it with **Windows' own bsdtar**
+(`%SystemRoot%\System32\tar.exe`):
+
+```powershell
+npm pack n8n-nodes-jenkins                        # -> n8n-nodes-jenkins-0.1.0.tgz
+$dest = "$env:USERPROFILE\.n8n\.n8n\nodes\node_modules\n8n-nodes-jenkins"
+New-Item -ItemType Directory -Force $dest
+& "$env:SystemRoot\System32\tar.exe" -xzf .\n8n-nodes-jenkins-0.1.0.tgz -C $dest
+Move-Item "$dest\package\*" $dest -Force          # flatten: package.json must sit at $dest
+Remove-Item "$dest\package" -Recurse -Force
+Restart-Service <your-n8n-service>                # node types are only read at boot
+```
+
+Notes:
+
+* `<user folder>\nodes\node_modules\<package>` is the layout n8n loads. The
+  tarball's top-level `package/` directory must be flattened so that
+  `package.json` / `index.js` / `dist/` sit directly in `<package>`. On this
+  machine the user folder is `C:\Users\Administrator\.n8n\.n8n` and the installed
+  package reports `n8n-nodes-jenkins@0.1.0` (author Jabbson).
+* Installed this way the package **does not appear under Settings → Community
+  nodes**: that page reads the `installedPackageRepository` database table, not
+  the directory. Nothing is broken - but there is no Uninstall button either, so
+  removal means deleting the directory and restarting.
+* A restart is required; a running n8n keeps the node types it already loaded.
 
 ## Adding a local hook (optional)
 

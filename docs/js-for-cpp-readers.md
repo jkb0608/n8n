@@ -244,3 +244,79 @@ prefix fails the check even though it would still parse. A regex that strips `//
 comments must **not** be used for this: these files contain
 `https://api.deepseek.com` and `http://127.0.0.1:8080/...`, and a line-oriented
 regex would silently cut those lines.
+
+### Layout safety boundary - what "formatting only" may and may not do
+
+Because the AST is the acceptance instrument, "cosmetic" has a precise meaning: an
+edit is cosmetic **only if the AST is unchanged**.
+
+Safe (AST-neutral):
+
+* indentation, line breaks, blank lines;
+* splitting an object literal across lines, one key per line;
+* splitting a multi-declarator `const a = 1, b = 2;` across lines;
+* adding `//` or `/* */` comments.
+
+**Not safe - it changes the AST:**
+
+```js
+} else if (tier === 'pass') note = '原样放行（est_tok <= ' + TIER_PRUNE + '）';      // ExpressionStatement
+} else if (tier === 'pass') { note = '原样放行（est_tok <= ' + TIER_PRUNE + '）'; }  // BlockStatement -> AST DIFF
+```
+
+Both lines behave identically, and that is exactly the trap: wrapping a single
+statement in braces turns an `ExpressionStatement` into a `BlockStatement`.
+"Behaviourally equivalent is good enough" is **not** accepted here, because the
+only thing that can be proven mechanically is *equality*, and the reader of this
+repository does not know JavaScript well enough to judge equivalence by eye.
+
+### Big-file workflow: prove it locally before it reaches the workflow
+
+For large Code nodes (thousands of characters, many string literals), do not edit
+the workflow directly:
+
+1. write the annotated `jsCode` to a **local file**;
+2. run the same AST comparison **offline** against the baseline;
+3. only when it reports `identical`, apply it and re-verify.
+
+The workflow is then written exactly once, and **before** that write it has already
+been proven semantically identical to the baseline. A mis-transcription cannot
+reach the workflow, because the gate runs on the file, not on the workflow.
+
+### Incident: a whole-file import must be built from the *current* export
+
+The line counts were the tell. After the last import `verify` printed `PASS` while
+`[ORCH]` showed `14 -> 14` instead of `14 -> 41`: the precheck JSON had been built
+from the **baseline** snapshot instead of the **current** export, so importing it
+silently reverted twelve already-annotated nodes - and `verify` still passed,
+because a baseline compared against itself is trivially equal.
+
+Recovery: `get_workflow_history` + `restore_workflow_version` brought back the last
+annotated version (n8n records a version per save, and an import also records one
+with `authors: "import"`), then the import was redone from the current export.
+
+Rule: **a whole-file import takes the current export as its input, never an older
+snapshot.** Overwriting newer work with an older snapshot is a whole class of bug,
+not a slip.
+
+### Incident: a verification that passes trivially is worse than none
+
+`jsast_equiv.mjs verify` answers "are the semantics still the baseline's?". For a
+node whose comments were just reverted the answer is *yes*, so it passes - and it
+passes **for the wrong reason**. A check that cannot fail in the situation it is
+meant to guard manufactures confidence.
+
+That is why `tools/expect_lines.mjs` exists: it asserts every Code node's **line
+count** against an explicit contract.
+
+```bash
+node tools/expect_lines.mjs dump/wf.json dump/expect_lines.json
+```
+
+Generate `expect_lines.json` from the file you proved locally, then assert it
+against the workflow you just wrote. Comments are lines; if the lines are there,
+the comments are there.
+
+**General lesson:** when a check passes, ask *what would have had to be true for it
+to fail*. If the answer is "nothing that could plausibly happen", the check is
+decoration.

@@ -15,6 +15,11 @@ Commands:
 
 Never commit a raw ``n8n export`` dump: it carries API keys, Basic auth headers
 and parameter values in clear text. `snapshot` reduces it to name/type/wiring.
+
+The snapshot is rendered compactly (one line per node / per connection source)
+and written with LF endings, so a diff reflects a real topology change instead of
+a formatter or line-ending artefact. On Windows a CRLF working copy differs from
+the committed file by exactly one byte per line - that is not a content change.
 """
 from __future__ import annotations
 
@@ -218,7 +223,56 @@ def redact(wf: dict) -> dict:
     keep = ("executionTimeout", "executionOrder", "errorWorkflow")
     if wf.get("settings"):
         out["settings"] = {k: v for k, v in wf["settings"].items() if k in keep}
+    # Node groups document the module boundaries (which nodes may be swapped as a
+    # unit); they carry no wiring, so they are safe to publish. The export stores
+    # members as nodeIds, so map them back to names.
+    if wf.get("nodeGroups"):
+        id2name = {n.get("id"): n.get("name") for n in wf.get("nodes", []) if n.get("id")}
+        out["nodeGroups"] = {
+            g.get("name"): [id2name.get(i, i) for i in (g.get("nodeNames") or g.get("nodeIds") or [])]
+            for g in wf["nodeGroups"]
+        }
     return out
+
+
+def render_snapshot(wf_name: str, wf: dict) -> str:
+    """Render the redacted payload compactly: one line per node / connection."""
+    r = redact(wf)
+    j = lambda v: json.dumps(v, ensure_ascii=False)  # noqa: E731
+    lines = ['{', '  "workflows": {', '    %s: {' % j(wf_name), '      "name": %s,' % j(r.get("name")), '      "nodes": [']
+    nodes = r["nodes"]
+    for i, n in enumerate(nodes):
+        lines.append('        { "name": %s, "type": %s }%s'
+                     % (j(n.get("name")), j(n.get("type")), "," if i < len(nodes) - 1 else ""))
+    lines.append('      ],')
+    lines.append('      "connections": {')
+    conns = r["connections"]
+    for i, src in enumerate(conns):
+        outs = []
+        for ctype, groups in conns[src].items():
+            rendered_groups = ", ".join(
+                "[%s]" % ", ".join('{ "node": %s }' % j(l.get("node")) for l in (g or []))
+                for g in groups
+            )
+            outs.append("%s: [%s]" % (j(ctype), rendered_groups))
+        lines.append('        %s: { %s }%s' % (j(src), ", ".join(outs), "," if i < len(conns) - 1 else ""))
+    lines.append('      }')
+    if r.get("settings"):
+        inner = ", ".join("%s: %s" % (j(k), j(v)) for k, v in r["settings"].items())
+        lines[-1] += ','
+        lines.append('      "settings": { %s }' % inner)
+    if r.get("nodeGroups"):
+        lines[-1] += ','
+        lines.append('      "nodeGroups": {')
+        groups = list(r["nodeGroups"].items())
+        for i, (gname, members) in enumerate(groups):
+            lines.append('        %s: [%s]%s'
+                         % (j(gname), ", ".join(j(m) for m in members), "," if i < len(groups) - 1 else ""))
+        lines.append('      }')
+    lines.append('    }')
+    lines.append('  }')
+    lines.append('}')
+    return "\n".join(lines) + "\n"
 
 
 def snapshot(dump_dir: Path, out_dir: Path) -> int:
@@ -235,8 +289,9 @@ def snapshot(dump_dir: Path, out_dir: Path) -> int:
                 continue
             name = (wf.get("name") or f.stem).strip().replace("/", "_").replace(" ", "-")
             (out_dir / f"{name}.json").write_text(
-                json.dumps({"workflows": {wf.get("name") or name: redact(wf)}}, ensure_ascii=False, indent=2),
+                render_snapshot(wf.get("name") or name, wf),
                 encoding="utf-8",
+                newline="\n",
             )
             print(f"[snapshot] {f.name} -> {name}.json")
             written += 1

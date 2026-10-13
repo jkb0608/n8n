@@ -315,6 +315,53 @@ Notes:
   removal means deleting the directory and restarting.
 * A restart is required; a running n8n keeps the node types it already loaded.
 
+## Known tooling limitations
+
+Collected here because each of these looks like a bug in *this* workflow but is
+not. All three were hit for real while building the pipeline.
+
+### Node-level `notes` cannot be written through the n8n MCP surface
+
+There is **no channel** to set a node's `notes` / `notesInFlow` field:
+
+| Route | Result |
+|---|---|
+| `addNode` reusing an existing node's name | rejected - `a node named '…' already exists`; it neither merges nor replaces |
+| `setNodeParameter` with JSON Pointer `/notes` | lands in **`parameters.notes`**; node-level `notes` stays `null` (the pointer is relative to `parameters`) |
+| Workflow SDK `node()` | the SDK reference documents no `notes` field; the only route would be a full `create_workflow_from_code` rewrite |
+| `setNodeSettings` | fixed schema (`onError` / `retryOnFail` / `maxTries` / …), no `notes` |
+
+Node annotations are therefore carried by **sticky notes**, one per module,
+listing what each node does as "input → action → output". Sticky notes are in the
+linter's `SKIP_TYPES`, so they add no flow nodes and no edges.
+
+### Do not use the Jenkins MCP for test results
+
+The community node plus the console log already cover what `getTestResults` would
+give:
+
+* pytest prints failing-test **locals** to the terminal, so the full
+  `stress_recorder` payload (`iteration` / `pass` / `latency_sec` / `reason`) is
+  **already in the console log** - per-iteration pass/fail, failure reason and
+  exact latency are all derivable from it. This pipeline does exactly that:
+  `records.source = 'console_pytest'`, read from
+  `FAILED …::test_person_search_stress[N]` plus the
+  `====== 19 failed, 1 passed ======` summary line.
+* `getBuild` / `getLastBuild` also return the junit action
+  (`failCount` / `skipCount` / `totalCount`), available for cross-checking the
+  console-derived counts.
+
+Adding the MCP server for this would cost a dependency **and** an
+`httpHeaderAuth` credential for zero extra information. The MCP node stays in the
+workflow but `disabled=true`.
+
+### A hand-unpacked community package has no UI entry
+
+See *Installing a community node by hand on Windows*: Settings → Community nodes
+reads the `installedPackageRepository` database table, it does not scan the nodes
+directory. The package works, but it shows no entry and offers no Uninstall
+button - removal means deleting the directory and restarting.
+
 ## Adding a local hook (optional)
 
 ```yaml

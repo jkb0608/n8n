@@ -362,6 +362,55 @@ reads the `installedPackageRepository` database table, it does not scan the node
 directory. The package works, but it shows no entry and offers no Uninstall
 button - removal means deleting the directory and restarting.
 
+## Known weakness: `prefix_hash` uses a lossy FNV-1a variant
+
+`[PROMPT]` computes its prefix fingerprint with
+
+```js
+h = (h * 0x01000193) >>> 0;
+```
+
+which is **not** standard FNV-1a. `h * 0x01000193` is a JavaScript *double*
+multiplication: the product exceeds 2^53, so low bits are lost before `>>> 0`
+truncates to 32 bits. The digest is therefore **more collision-prone than real
+FNV-1a**.
+
+Why it is deliberately not fixed: the value is recorded in every round's usage
+ledger (`usage_ledger[].prefix_hash`) and compared against the runtime value.
+Reproducing it exactly is what lets `tools/jsast_equiv.mjs` assert "the frozen
+prefix did not change" against the same number the workflow prints. Fixing the
+hash would invalidate that recorded history for a purely theoretical benefit.
+
+Consequence to keep in mind: "prefix unchanged" is a *practical* self-check, not a
+cryptographic one. A changed byte inside `SYS` / `D_TAIL` would still almost
+certainly change this digest - but the guarantee is statistical, not absolute.
+
+## Environment trap: Windows console GBK vs UTF-8 program output
+
+A PowerShell console on this machine decodes a child process's stdout as **GBK**,
+while Python writes **UTF-8** by default, so anything non-ASCII comes back as
+mojibake. Two real incidents:
+
+1. `ci/capture_device.py` wrote `✅` (U+2705) to stdout without setting UTF-8. The
+   encode failed and the **Cat.1 log was truncated at ~225.498** - an entire round
+   of Cat.1 evidence was lost, and it looked like the device had stopped logging.
+2. While annotating the Code nodes, the baseline `jsCode` was dumped to the console
+   to be copied verbatim. The Chinese string literals came back as mojibake, so
+   re-typing them from that output would have **actually changed string literals**
+   inside the workflow - the one thing the annotation task forbids. The AST check
+   would have caught it, but repairing it needs a *faithful* read, i.e. the same
+   broken pipe.
+
+Fix, whenever a UTF-8 program's output is read from PowerShell:
+
+```powershell
+$env:PYTHONIOENCODING = 'utf-8'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+```
+
+The second incident is the more dangerous one: the first destroys a product, the
+second **destroys the ability to verify the product**.
+
 ## Adding a local hook (optional)
 
 ```yaml

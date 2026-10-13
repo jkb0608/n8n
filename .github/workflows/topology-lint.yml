@@ -1,0 +1,42 @@
+name: topology-lint
+
+# Change-time gate for n8n workflow topology.
+#
+# n8n itself cannot detect an accidental cycle: loops are legal there (a bounded
+# retry back-edge is intentional), so its validator only reports local problems.
+# A stray edge that closes a silent cycle has no schema symptom - the first real
+# symptom is a stack of duplicate emails. This job is the missing check.
+
+on:
+  push:
+    paths:
+      - 'topology/**'
+      - 'tools/**'
+      - '.github/workflows/**'
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  topology-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Proves the checker still catches the bug class it exists for.
+      - name: self-test (gate must catch a cycle)
+        run: python tools/n8n_topology.py self-test
+
+      - name: lint managed topologies
+        shell: bash
+        run: |
+          shopt -s nullglob
+          files=(topology/*.json)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "no topology snapshot committed yet - skipping lint"
+            exit 0
+          fi
+          python tools/n8n_topology.py lint topology/

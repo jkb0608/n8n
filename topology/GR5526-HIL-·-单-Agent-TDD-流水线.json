@@ -32,7 +32,12 @@
         { "name": "[GATE] 工具结果三级闸门", "type": "n8n-nodes-base.code" },
         { "name": "[SPILL] 转二进制", "type": "n8n-nodes-base.convertToFile" },
         { "name": "[SPILL] 写盘", "type": "n8n-nodes-base.readWriteFile" },
-        { "name": "[LOG] 规范化日志契约", "type": "n8n-nodes-base.code" }
+        { "name": "[LOG] 规范化日志契约", "type": "n8n-nodes-base.code" },
+        { "name": "[JENKINS] 取控制台日志", "type": "n8n-nodes-jenkins.jenkinsNode" },
+        { "name": "[JENKINS] 取 RTT 日志", "type": "n8n-nodes-jenkins.jenkinsNode" },
+        { "name": "[ART] RTT 转文本", "type": "n8n-nodes-base.extractFromFile" },
+        { "name": "[JENKINS] 取压测聚合结果", "type": "n8n-nodes-jenkins.jenkinsNode" },
+        { "name": "[ART] 聚合转文本", "type": "n8n-nodes-base.extractFromFile" }
       ],
       "connections": {
         "手动启动": { "main": [[{ "node": "[ORCH] 初始化任务" }]] },
@@ -61,20 +66,26 @@
         "[GATE] 工具结果三级闸门": { "main": [[{ "node": "[SPILL] 转二进制" }]] },
         "[SPILL] 转二进制": { "main": [[{ "node": "[SPILL] 写盘" }]] },
         "[SPILL] 写盘": { "main": [[{ "node": "[PROMPT] 组装提示词" }]] },
-        "[MCP] 取 Jenkins 控制台日志": { "main": [[{ "node": "[LOG] 规范化日志契约" }]] },
-        "[LOG] 规范化日志契约": { "main": [[{ "node": "[GUARD] 请求与数据完整性检查" }]] }
+        "[LOG] 规范化日志契约": { "main": [[{ "node": "[GUARD] 请求与数据完整性检查" }]] },
+        "[MCP] 取 Jenkins 控制台日志": { "main": [[{ "node": "[JENKINS] 取控制台日志" }]] },
+        "[JENKINS] 取控制台日志": { "main": [[{ "node": "[JENKINS] 取 RTT 日志" }]] },
+        "[JENKINS] 取 RTT 日志": { "main": [[{ "node": "[ART] RTT 转文本" }]] },
+        "[ART] RTT 转文本": { "main": [[{ "node": "[JENKINS] 取压测聚合结果" }]] },
+        "[JENKINS] 取压测聚合结果": { "main": [[{ "node": "[ART] 聚合转文本" }]] },
+        "[ART] 聚合转文本": { "main": [[{ "node": "[LOG] 规范化日志契约" }]] }
       },
       "settings": { "executionOrder": "v1" },
       "nodeGroups": {
         "01 编排": ["[ORCH] 初始化任务"],
         "02 CI 构建与轮询": ["[CI] 触发 Jenkins 构建", "[WAIT] 等 30 秒", "[CI] 列出最近构建", "[NORM] 规范化构建状态", "[IF] 还在构建?"],
-        "03 证据采集与完整性门禁": ["[MCP] 取 Jenkins 控制台日志", "[LOG] 规范化日志契约", "[GUARD] 请求与数据完整性检查", "[IF] 门禁: 证据可用?"],
-        "04 机械分类与固件判定": ["[CLASSIFY] 探针分类", "[IF] 门禁: 是固件故障?"],
-        "05 上下文闸门与落盘": ["[GATE] 工具结果三级闸门", "[SPILL] 转二进制", "[SPILL] 写盘"],
-        "06 单 Agent 诊断": ["[PROMPT] 组装提示词", "[D] 开发 Agent (API)", "[D-EX] 提取开发结论", "[PARSE] 判定修复结果"],
-        "07 Token 账与重试计数": ["[TOKENS] 统计 token", "[RETRY] 计数+1"],
-        "08 升级文案": ["[NOTIFY] 通知人（3 次未修复）"],
-        "09 交付（邮件）": ["[OUT] 汇总", "[MAIL-TPL] 渲染邮件模板", "[MAIL] 发邮件通知"]
+        "03 证据采集（console + artifacts）": ["[MCP] 取 Jenkins 控制台日志", "[JENKINS] 取控制台日志", "[JENKINS] 取 RTT 日志", "[ART] RTT 转文本", "[JENKINS] 取压测聚合结果", "[ART] 聚合转文本", "[LOG] 规范化日志契约"],
+        "04 完整性门禁": ["[GUARD] 请求与数据完整性检查", "[IF] 门禁: 证据可用?"],
+        "05 机械分类与固件判定": ["[CLASSIFY] 探针分类", "[IF] 门禁: 是固件故障?"],
+        "06 上下文闸门与落盘": ["[GATE] 工具结果三级闸门", "[SPILL] 转二进制", "[SPILL] 写盘"],
+        "07 单 Agent 诊断": ["[PROMPT] 组装提示词", "[D] 开发 Agent (API)", "[D-EX] 提取开发结论", "[PARSE] 判定修复结果"],
+        "08 Token 账与重试计数": ["[TOKENS] 统计 token", "[RETRY] 计数+1"],
+        "09 升级文案": ["[NOTIFY] 通知人（3 次未修复）"],
+        "10 交付（邮件）": ["[OUT] 汇总", "[MAIL-TPL] 渲染邮件模板", "[MAIL] 发邮件通知"]
       }
     }
   }
